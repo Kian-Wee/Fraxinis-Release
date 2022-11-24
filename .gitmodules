@@ -1,0 +1,3 @@
+[submodule "Fraxinis Release/lib/ESP32Servo"]
+	path = Fraxinis Release/lib/ESP32Servo
+	url = https://github.com/jkb-git/ESP32Servo.git
