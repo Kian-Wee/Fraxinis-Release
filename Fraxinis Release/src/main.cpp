@@ -1,11 +1,11 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <VL53L0X.h>
+// #include "Wire.h"
+// #include <VL53L0X.h>
 #include <ESP32_Servo.h>
 
 Servo counterservo;
 Servo payloadservo;
-VL53L0X sensor;
+// VL53L0X sensor;
 
 /**
 Uncomment this line to use long range mode. This
@@ -38,12 +38,14 @@ Uncomment ONE of these two lines to get
 #define PAYLOAD_SWITCH 8
 #define COUNTER_SWITCH 10
 
-#define WAIT_FOR_DROP 0.9 //(m)waits until the height is below a certain threshold to prevent misfires, set to 0 to disable
+#define WAIT_FOR_DROP 0 //(m)waits until the height is below a certain threshold to prevent misfires, set to 0 to disable
 
 #define DEBUGPRINT 1 //prints debug statement
 
-int secondreleasetimer=0;
+int secondreleasetimer=2000;
 int resettimer=0;
+int payloadstate=0; //1 -> open, 0 -> closed
+int counterstate=0;
 bool dropbool=0;
 String incomingByte; //Using .readstring currently, use int(ascii) for .read
 
@@ -73,47 +75,62 @@ float caculatesecondrelease(float distance){
 }
 
 //simple test function
-void checkanalogvalue(int analogpin){
-  Serial.println(analogRead(analogpin));
+bool a =0;
+void testdrop(int droptime=10){
+
+  if (millis() > 3*1000 && a==0){
+    println("TESTING DROP");
+    dropbool=1;
+    a=1;
+  }
 }
 
 void setup() {
 
     Serial.begin(115200);
+    println("Microcontroller booting up");
 
-    pinMode(PAYLOAD_SWITCH,INPUT);
-    pinMode(COUNTER_SWITCH,INPUT);
+    pinMode(PAYLOAD_SWITCH,INPUT_PULLDOWN);
+    pinMode(COUNTER_SWITCH,INPUT_PULLDOWN);
 
     counterservo.attach(COUNTER_SERVO);
     payloadservo.attach(PAYLOAD_SERVO);
 
-    Wire.begin();
+    pinMode(PAYLOAD_LED,OUTPUT);
+    pinMode(COUNTER_LED,OUTPUT);
 
-    sensor.setTimeout(500);
-    if (!sensor.init())
-    {
-    println("Failed to detect and initialize sensor!");
-    while (1) {}
-    }
+    // Wire.begin(8,9);
 
-    #if defined LONG_RANGE
-    // lower the return signal rate limit (default is 0.25 MCPS)
-    sensor.setSignalRateLimit(0.1);
-    // increase laser pulse periods (defaults are 14 and 10 PCLKs)
-    sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
-    sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
-    #endif
+    // sensor.setTimeout(500);
+    // if (!sensor.init())
+    // {
+    // println("Failed to detect and initialize sensor!");
+    // while (1) {}
+    // }
 
-    #if defined HIGH_SPEED
-    // reduce timing budget to 20 ms (default is about 33 ms)
-    sensor.setMeasurementTimingBudget(20000);
-    #elif defined HIGH_ACCURACY
-    // increase timing budget to 200 ms
-    sensor.setMeasurementTimingBudget(200000);
-    #endif
+    // #if defined LONG_RANGE
+    // // lower the return signal rate limit (default is 0.25 MCPS)
+    // sensor.setSignalRateLimit(0.1);
+    // // increase laser pulse periods (defaults are 14 and 10 PCLKs)
+    // sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
+    // sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
+    // #endif
+
+    // #if defined HIGH_SPEED
+    // // reduce timing budget to 20 ms (default is about 33 ms)
+    // sensor.setMeasurementTimingBudget(20000);
+    // #elif defined HIGH_ACCURACY
+    // // increase timing budget to 200 ms
+    // sensor.setMeasurementTimingBudget(200000);
+    // #endif
 }
 
 void loop(){
+
+  testdrop();
+
+  // Serial.println(digitalRead(COUNTER_SWITCH));
+  // delay(200);
 
     if (Serial.available() > 0) {
 
@@ -126,49 +143,72 @@ void loop(){
     }
 
     // Drop counterweight first
-    if (dropbool=1){
-      int sensorreading=sensor.readRangeSingleMillimeters();
-      Serial.print(sensorreading);
-      if (sensor.timeoutOccurred()) { Serial.print(" TIMEOUT"); }
-      Serial.println();
+    if (dropbool==1){
+      // int sensorreading=sensor.readRangeSingleMillimeters();
+      // Serial.print(sensorreading);
+      // if (sensor.timeoutOccurred()) { Serial.print(" TIMEOUT"); }
+      // Serial.println();
+      int sensorreading=WAIT_FOR_DROP;
       if (WAIT_FOR_DROP == 0){
         secondreleasetimer = caculatesecondrelease(sensorreading);
         dropbool=0;
+        println("Releasing Counterweight");
+        counterservo.write(COUNTER_SERVO_OPEN);
+        digitalWrite(COUNTER_LED,HIGH);
       }else{
         if (sensorreading <= WAIT_FOR_DROP){
           secondreleasetimer = caculatesecondrelease(sensorreading);
           dropbool=0;
+          println("Releasing Counterweight");
+          counterservo.write(COUNTER_SERVO_OPEN);
+          digitalWrite(COUNTER_LED,HIGH);
         }
       }
     }
 
     // Release payloadweight at right time
-    if (millis() >= secondreleasetimer){
-        payloadservo.write(PAYLOAD_SERVO_OPEN);
-        delay(15); // waits for the servo to get there
-        resettimer=millis()+1000;
+    if (millis() >= secondreleasetimer && secondreleasetimer != -1){
+      println("Releasing Payload");
+      payloadservo.write(PAYLOAD_SERVO_OPEN);
+      digitalWrite(PAYLOAD_LED,HIGH);
+      delay(15); // waits for the servo to get there
+      secondreleasetimer=-1;
+      resettimer=millis()+1000;
     }
 
     // Closes the servo after release
-    if (millis() >= resettimer){
-        counterservo.write(COUNTER_SERVO_CLOSED);
-        payloadservo.write(PAYLOAD_SERVO_CLOSED);
-        delay(15); // waits for the servo to get there
-        resettimer= millis();
+    if (resettimer >= millis()){
+      println("Resetting Servos");
+      counterservo.write(COUNTER_SERVO_CLOSED);
+      digitalWrite(COUNTER_LED,LOW);
+      payloadservo.write(PAYLOAD_SERVO_CLOSED);
+      digitalWrite(PAYLOAD_LED,LOW); 
+      delay(15); // waits for the servo to get there
+      resettimer=0;
     }
 
     // Opens the servo if button pressed
     if (digitalRead(COUNTER_SWITCH) == 1){
-        counterservo.write(COUNTER_SERVO_OPEN);
-        delay(15); // waits for the servo to get there
-        dropbool=0;
+      println("Opening Counter Servo");
+      counterservo.write(COUNTER_SERVO_OPEN);
+      digitalWrite(COUNTER_LED,HIGH);
+      delay(15); // waits for the servo to get there
+      counterstate=1;
+    }else if (digitalRead(COUNTER_SWITCH) == 0 && counterstate == 1){
+      counterservo.write(COUNTER_SERVO_CLOSED);
+      digitalWrite(COUNTER_LED,LOW); 
+      counterstate=0;
     }
+
     if (digitalRead(PAYLOAD_SWITCH) == 1){
-        payloadservo.write(PAYLOAD_SERVO_OPEN);
-        delay(15); // waits for the servo to get there
-        dropbool=0;
+      println("Opening Payload Servo");
+      payloadservo.write(PAYLOAD_SERVO_OPEN);
+      digitalWrite(PAYLOAD_LED,HIGH); 
+      delay(15); // waits for the servo to get there
+    } else if (digitalRead(PAYLOAD_SWITCH) == 0 && payloadstate == 1){
+      payloadservo.write(PAYLOAD_SERVO_CLOSED);
+      digitalWrite(PAYLOAD_LED,LOW); 
+      payloadstate=0;
     }
 
 }
-
-
