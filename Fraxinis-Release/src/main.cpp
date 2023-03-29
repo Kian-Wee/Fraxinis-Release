@@ -3,28 +3,17 @@
 // pio run # Build the firmware
 // pio run --target upload # Flash the firmware
 
+#define ESP32C3
+// #define ESP32S3
 
 #include <Arduino.h>
 // #include "Wire.h"
 // #include <VL53L0X.h>
 #include <ESP32_Servo.h>
 
-#include <micro_ros_platformio.h>
-#include <rcl/rcl.h>
-#include <rclc/rclc.h>
-#include <rclc/executor.h>
-#include <std_msgs/msg/int32.h>
-#include <std_msgs/msg/bool.h>
-
-#include <rc.cpp>
-
-rcl_publisher_t publisher;
-std_msgs__msg__Int32 msg;
-rclc_executor_t executor;
-rclc_support_t support;
-rcl_allocator_t allocator;
-rcl_node_t node;
-rcl_timer_t timer;
+#include <misc_fn.h>
+#include <rc.h>
+#include <ros.h>
 
 const int8_t RCin_PR = 1; //Payload Release Pin (Disarmed-Offboard-Override)
 const int8_t RCin_TP = 2; // Thruster Pin(Reverse-Disarmed-Forward)
@@ -35,7 +24,15 @@ const int8_t P_Switch = 10, C_Switch = 8;
 const int8_t P_LED = 6, T_LED=7;
 const int8_t Payload_pin = 5, Thruster_pin = 4;
 
+extern std_msgs__msg__Bool payload_in_msg;
+extern std_msgs__msg__Bool counter_in_msg;
+extern std_msgs__msg__Int32 thrust_in_msg;
+
 //-----------------------------------------------------------------------------
+
+// Core definitions for multithreading (assuming you have dual-core ESP32)
+static const BaseType_t pro_cpu = 0; // wifi_core
+static const BaseType_t app_cpu = 1;
 
 /**
 Uncomment this line to use long range mode. This
@@ -57,9 +54,6 @@ Uncomment ONE of these two lines to get
 //#define HIGH_SPEED
 #define HIGH_ACCURACY
 
-
-
-
 #define PAYLOAD_SERVO 4
 #define PAYLOAD_SERVO_OPEN 1700
 #define PAYLOAD_SERVO_CLOSED 1000
@@ -73,26 +67,11 @@ Uncomment ONE of these two lines to get
 
 #define WAIT_FOR_DROP 0 //(m)waits until the height is below a certain threshold to prevent misfires, set to 0 to disable
 
-#define DEBUGPRINT 1 //prints debug statement
+const bool DEBUGPRINT =1; //prints debug statement
 
 int secondreleasetimer=2000;
 int resettimer=0;
-int payloadstate=0; //1 -> open, 0 -> closed
-int counterstate=0;
-bool dropbool=0;
 
-//print function to reduce serial overhead at runtime
-void print(String message, bool debug=DEBUGPRINT){
-  if(debug==1){
-    Serial.println(message);
-  }
-}
-
-void println(String message, bool debug=DEBUGPRINT){
-  if(debug==1){
-    Serial.println(message);
-  }
-}
 
 /**
  * caculates timing for second payload release, in this case the counterweight drops first to give time to wrap around the post
@@ -112,10 +91,48 @@ void testdrop(int droptime=10){
 
   if (millis() > 3*1000 && a==0){
     println("TESTING DROP");
-    dropbool=1;
     a=1;
   }
 }
+
+class servo_class {
+  public:
+    servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE,int PWM_CLOSED_OVERWRITE, int8_t led_pin);
+    int PWM_OPEN;
+    int PWM_CLOSED;
+    Servo servo_obj;
+    int state; //Open = 1, Closed = 0
+    void WriteState(int8_t new_state);
+    int8_t led_pin = led_pin; //TEST THIS
+    int store_state; //Used to store a new state temporarily, updated when UpdateState is called
+    void UpdateState();
+};
+
+servo_class::servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE = 1900,int PWM_CLOSED_OVERWRITE = 1100, int8_t led_pin=2){
+  servo_obj.attach(servo_pin);
+  int PWM_OPEN = PWM_OPEN_OVERWRITE;
+  int PWM_CLOSED = PWM_CLOSED_OVERWRITE;
+  if (led_pin!=2) pinMode(led_pin,OUTPUT);
+}
+
+void servo_class::WriteState(int8_t new_state){
+  if(new_state != state){
+    if(new_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH);
+    if(new_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW);
+    state=new_state;
+  }
+}
+
+void servo_class::UpdateState(){
+  if(store_state != state){
+    if(store_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH);
+    if(store_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW);
+    state=store_state;
+  }
+}
+
+servo_class payload(Payload_pin, 1940,1400, PAYLOAD_LED);
+servo_class counter(Thruster_pin, 1940,1400, COUNTER_LED);
 
 void setup() {
 
@@ -125,16 +142,12 @@ void setup() {
     pinMode(PAYLOAD_SWITCH,INPUT_PULLDOWN);
     pinMode(COUNTER_SWITCH,INPUT_PULLDOWN);
 
-    pinMode(PAYLOAD_LED,OUTPUT);
-    pinMode(COUNTER_LED,OUTPUT);
-
-    servo_class payload(Payload_pin, 1940,1400);
-    servo_class counter(Thruster_pin, 1940,1400);
-
     setupRC(RCin_PR); //Payload Release Pin (Disarmed-Offboard-Override)
     setupRC(RCin_TP); // Thruster Pin(Reverse-Disarmed-Forward)
     setupRC(RCin_TM); // Thruster Modifier Pin(20%-80%), necessary to ramp up throttle and prevent jerks
     setupRC(RCin_AP); // Adhesive Pin(Off, Inject Adhesive, Turn on UV Light)
+
+    setupROS();
 
     // Wire.begin(8,9);
 
@@ -160,26 +173,88 @@ void setup() {
     // // increase timing budget to 200 ms
     // sensor.setMeasurementTimingBudget(200000);
     // #endif
+
+  // There are 2 main sources of blocking code, the reading of PWM and the release of servo, which are both time dependant
+  // If using a dual core S3, seperate these 2 tasks to run on a thread so that the other 2 tasks are responsive
+  #ifdef ESP32S3
+    xTaskCreatePinnedToCore(doTask0,
+                "Task 0",
+                237680,
+                NULL,
+                1,
+                NULL,
+                pro_cpu);
+
+    // Start Task 1 (in Core 1)
+    xTaskCreatePinnedToCore(doTask1,
+                "Task 1",
+                6000,
+                NULL,
+                1,
+                NULL,
+                app_cpu);
+  #endif
+
+  println("Finish setup");
+}
+
+void caseloop(){
+
+  // Opens the servo if button pressed
+  if (digitalRead(COUNTER_SWITCH) == 1){
+    println("Opening Counter Servo");
+    counter.WriteState(1);
+    delay(15); // waits for the servo to get there
+  }else if (digitalRead(COUNTER_SWITCH) == 0 && counter.state == 1){
+    counter.WriteState(0);
+    delay(15); // waits for the servo to get there
+  }
+
+  if (digitalRead(PAYLOAD_SWITCH) == 1){
+    println("Opening Payload Servo");
+    payload.WriteState(1);
+  } else if (digitalRead(PAYLOAD_SWITCH) == 0 && payload.state == 1){
+    payload.WriteState(0);
+    delay(15); // waits for the servo to get there
+  }
+  
+  if (payload_in_msg.data == 1) payload.store_state = 1;
+  if (payload_in_msg.data == 0) payload.store_state = 0;  
+  if (counter_in_msg.data == 1) counter.store_state = 1;
+  if (counter_in_msg.data == 0) counter.store_state = 0;
+
+}
+
+// MultiThreading task 0
+void doTask0(void *parameters)
+{
+	while (1)
+	{
+    caseloop();
+		RCCHECK(rclc_executor_spin(&executor));
+	}
+}
+
+// MultiThreading task 1
+void doTask1(void *parameters)
+{
+	while (1)
+	{
+    readRCAll();
+    payload.UpdateState();
+    counter.UpdateState();
+	}
 }
 
 void loop(){
 
-  readRC(RCin_PR); //Payload Release Pin (Disarmed-Offboard-Override)
-  readRC(RCin_TP); // Thruster Pin(Reverse-Disarmed-Forward)
-  readRC(RCin_TM); // Thruster Modifier Pin(20%-80%), necessary to ramp up throttle and prevent jerks
-  readRC(RCin_AP); // Adhesive Pin(Off, Inject Adhesive, Turn on UV Light)
-
-
-//     if (Serial.available() > 0) {
-
-//     incomingByte = Serial.readStringUntil('\n');
-//     println("Reading String: " + incomingByte);
-
-//       if (incomingByte == "D"){
-//           dropbool=1;
-//           }
-//     }
-
+// Run single core loop only if ESP32C3 is defined
+#ifdef ESP32C3
+  readRCAll();
+  caseloop();
+  payload.UpdateState();
+  counter.UpdateState();
+#endif
 //     // Drop counterweight first
 //     if (dropbool==1){
 //       // int sensorreading=sensor.readRangeSingleMillimeters();
@@ -225,54 +300,5 @@ void loop(){
 //       resettimer=0;
 //     }
 
-    // Opens the servo if button pressed
-    if (digitalRead(COUNTER_SWITCH) == 1){
-      println("Opening Counter Servo");
-    //   counterservo.write(COUNTER_SERVO_OPEN);
-	    counterservo.write(1000);
-      digitalWrite(COUNTER_LED,HIGH);
-      delay(15); // waits for the servo to get there
-      counterstate=1;
-    }else if (digitalRead(COUNTER_SWITCH) == 0 && counterstate == 1){
-      counterservo.write(COUNTER_SERVO_CLOSED);
-      digitalWrite(COUNTER_LED,LOW); 
-      counterstate=0;
-    }
 
-    if (digitalRead(PAYLOAD_SWITCH) == 1){
-      println("Opening Payload Servo");
-      payloadservo.write(PAYLOAD_SERVO_OPEN);
-      digitalWrite(PAYLOAD_LED,HIGH); 
-      delay(15); // waits for the servo to get there
-	  payloadstate=1;
-    } else if (digitalRead(PAYLOAD_SWITCH) == 0 && payloadstate == 1){
-      payloadservo.write(PAYLOAD_SERVO_CLOSED);
-      digitalWrite(PAYLOAD_LED,LOW); 
-      payloadstate=0;
-    }
-}
-
-class servo_class {
-  public:
-    servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE,int PWM_CLOSED_OVERWRITE);
-    int PWM_OPEN;
-    int PWM_CLOSED;
-    Servo servo_obj;
-    int state; //Open = 1, Closed = 0
-    void WriteState(int8_t new_state);
-};
-
-servo_class::servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE = 1900,int PWM_CLOSED_OVERWRITE = 1100){
-  servo_obj.attach(servo_pin);
-  int PWM_OPEN = PWM_OPEN_OVERWRITE;
-  int PWM_CLOSED = PWM_CLOSED_OVERWRITE;
-}
-
-
-void servo_class::WriteState(int8_t new_state){
-  if(new_state != state){
-    if(new_state == 1) servo_obj.write(PWM_OPEN);
-    if(new_state == 0) servo_obj.write(PWM_CLOSED);
-    state=new_state;
-  }
 }
