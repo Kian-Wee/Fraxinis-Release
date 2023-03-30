@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-extern bool DEBUGPRINT;
+extern const bool DEBUGPRINT;
 
 //print function to reduce serial overhead at runtime
 void print(String message, bool debug=DEBUGPRINT){

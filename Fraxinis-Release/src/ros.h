@@ -35,7 +35,7 @@ void error_loop()
 {
     while (1)
     {
-        digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
+        // digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
         delay(100);
     }
 }
@@ -60,6 +60,21 @@ IPAddress agent_ip(192, 168, 163, 93);
 size_t agent_port = 8888;
 char ssid[] = "*****";
 char psk[] = "*****";
+
+void payload_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Bool *payload_in_msg = (const std_msgs__msg__Bool *)msgin;
+}
+
+void counter_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Bool *counter_in_msg = (const std_msgs__msg__Bool *)msgin;
+}
+
+void thrust_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Int32 *counter_in_msg = (const std_msgs__msg__Int32 *)msgin;
+}
 
 void setupROS()
 {
@@ -127,38 +142,3 @@ void setupROS()
 println("Finish setup");
 }
 
-void doTask0(void *parameters)
-{
-	while (1)
-	{
-		RCCHECK(rclc_executor_spin(&executor));
-	}
-}
-
-void doTask1(void *parameters)
-{
-	while (1)
-	{
-		println("Toggling led!");
-		digitalWrite(BUILTIN_LED, HIGH);
-    	vTaskDelay(1000 / portTICK_PERIOD_MS);
-		println("Toggling led!");
-		digitalWrite(BUILTIN_LED, LOW);
-    	vTaskDelay(1000 / portTICK_PERIOD_MS);
-	}
-}
-
-void payload_subscription_callback(const void *msgin)
-{
-	const std_msgs__msg__Bool *payload_in_msg = (const std_msgs__msg__Bool *)msgin;
-}
-
-void counter_subscription_callback(const void *msgin)
-{
-	const std_msgs__msg__Bool *counter_in_msg = (const std_msgs__msg__Bool *)msgin;
-}
-
-void thrust_subscription_callback(const void *msgin)
-{
-	const std_msgs__msg__Int32 *counter_in_msg = (const std_msgs__msg__Int32 *)msgin;
-}
