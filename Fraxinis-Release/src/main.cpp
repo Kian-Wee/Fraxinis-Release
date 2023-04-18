@@ -16,11 +16,170 @@
 #include <rc.h>
 #include <ros.h>
 
+// extern std_msgs__msg__Bool payload_in_msg;
+// extern std_msgs__msg__Bool counter_in_msg;
+// extern std_msgs__msg__Int32 thrust_in_msg;
+
+#include <micro_ros_platformio.h>
+#include <stdio.h>
+#include <rcl/rcl.h>
+#include <rcl/error_handling.h>
+#include <rclc/rclc.h>
+#include <rclc/executor.h>
+#include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/bool.h>
+
+#include "secrets.h"
+#include "misc_fn.h"
+
+// rcl_service_impl_t payload_subscriber;
+rcl_subscription_t payload_subscriber;
+std_msgs__msg__Bool payload_in_msg;
+// rcl_publisher_t payload_publisher;
+// std_msgs__msg__Bool payload_out_msg;
+
+rcl_subscription_t counter_subscriber;
+// rcl_service_impl_t counter_subscriber;
+std_msgs__msg__Bool counter_in_msg;
+// rcl_publisher_t counter_publisher;
+// std_msgs__msg__Bool counter_out_msg;
+
+rcl_subscription_t thrust_subscriber;
+std_msgs__msg__Int32 thrust_in_msg;
+// rcl_publisher_t thrust_publisher;
+// std_msgs__msg__Int32 thrust_out_msg;
+
+rclc_executor_t executor;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_node_t node;
+rcl_timer_t timer;
+
+void error_loop()
+{
+    // while (1)
+    // {
+    //     // digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
+    //     println("Stuck in RC Check");
+    //     delay(100);
+    // }
+}
+
+// #define RCCHECK(fn)                  \
+//     {                                \
+//         rcl_ret_t temp_rc = fn;      \
+//         if ((temp_rc != RCL_RET_OK)) \
+//         {                            \
+//             error_loop();            \
+//         }                            \
+//     }
+// #define RCSOFTCHECK(fn)              \
+//     {                                \
+//         rcl_ret_t temp_rc = fn;      \
+//         if ((temp_rc != RCL_RET_OK)) \
+//         {                            \
+//         }                            \
+//     }
+
+#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){println("Stuck in RCCHECK");error_loop();}}
+#define RCSOFTCHECK(fn) {rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){println("Stuck in RCSOFTHECK");}}
+
+IPAddress agent_ip(192, 168, 1, 3);
+size_t agent_port = 8888;
+extern char ssid[];
+extern char psk[];
+
+void payload_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Bool *payload_in_msg = (const std_msgs__msg__Bool *)msgin;
+}
+
+void counter_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Bool *counter_in_msg = (const std_msgs__msg__Bool *)msgin;
+}
+
+void thrust_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Int32 *counter_in_msg = (const std_msgs__msg__Int32 *)msgin;
+}
+
+void setupROS()
+{
+
+    println("Setting up ROS");
+    
+    print("Wifi Credentials: "); print(ssid); print("|"); println(psk);
+
+    set_microros_wifi_transports(ssid, psk, agent_ip, agent_port);
+    println("Added wifi transport");
+    allocator = rcl_get_default_allocator();
+    println("Added allocator");
+
+    // create init_options
+    RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
+    println("Init options");
+
+    // create node
+    RCCHECK(rclc_node_init_default(&node, "micro_ros_arduino_node", "", &support));
+    println("Created ROS node");
+
+    // create executor
+    RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
+    println("Created ROS executor");
+
+    // create subscriber
+    RCCHECK(rclc_subscription_init_default(
+        &payload_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
+        "payload_drop"));
+    RCCHECK(rclc_executor_add_subscription(&executor, &payload_subscriber, &payload_in_msg, &payload_subscription_callback, ON_NEW_DATA));
+
+    RCCHECK(rclc_subscription_init_default(
+        &counter_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
+        "counter_drop"));
+    RCCHECK(rclc_executor_add_subscription(&executor, &counter_subscriber, &counter_in_msg, &counter_subscription_callback, ON_NEW_DATA));
+
+    RCCHECK(rclc_subscription_init_default(
+        &thrust_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+        "thruster_speed"));
+    RCCHECK(rclc_executor_add_subscription(&executor, &thrust_subscriber, &thrust_in_msg, &thrust_subscription_callback, ON_NEW_DATA));
+    // RCCHECK(rclc_publisher_init_default(
+    //   &thrust_publisher,
+    //   &node,
+    //   ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+    //   "micro_ros_control_node"));
+
+    // There are 2 main sources of blocking code, the reading of PWM and the release of servo, which are both time dependant
+    // If using a dual core S3, seperate these 2 tasks to run on a thread so that the other 2 tasks are responsive
+    #ifdef ESP32S3
+        xTaskCreatePinnedToCore(doTask0,
+                                "Task 0",
+                                237680,
+                                NULL,
+                                1,
+                                NULL,
+                                pro_cpu);
+
+        // Start Task 1 (in Core 1)
+        xTaskCreatePinnedToCore(doTask1,
+                                "Task 1",
+                                6000,
+                                NULL,
+                                1,
+                                NULL,
+                                app_cpu);
+    #endif
+
+    println("Finish ROS setup");
+}
 
 
-extern std_msgs__msg__Bool payload_in_msg;
-extern std_msgs__msg__Bool counter_in_msg;
-extern std_msgs__msg__Int32 thrust_in_msg;
 
 //-----------------------------------------------------------------------------
 
@@ -111,7 +270,7 @@ servo_class::servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE = 1900,int PWM_
 
 void servo_class::WriteState(int8_t new_state){
   if(new_state != state){
-    if(new_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH);
+    if(new_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH); println("SERVO OPEN");
     if(new_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW);
     state=new_state;
   }
@@ -132,6 +291,7 @@ void setup() {
 
     Serial.begin(115200);
     println("Microcontroller booting up");
+    delay(2000);
 
     pinMode(PAYLOAD_SWITCH,INPUT_PULLDOWN);
     pinMode(COUNTER_SWITCH,INPUT_PULLDOWN);
@@ -212,7 +372,7 @@ void caseloop(){
     delay(15); // waits for the servo to get there
   }
   
-  if (payload_in_msg.data == 1) payload.store_state = 1;
+  if (payload_in_msg.data == 1) payload.store_state = 1; println("HAHA");
   if (payload_in_msg.data == 0) payload.store_state = 0;  
   if (counter_in_msg.data == 1) counter.store_state = 1;
   if (counter_in_msg.data == 0) counter.store_state = 0;
