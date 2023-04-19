@@ -57,12 +57,12 @@ rcl_timer_t timer;
 
 void error_loop()
 {
-    // while (1)
-    // {
-    //     // digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
-    //     println("Stuck in RC Check");
-    //     delay(100);
-    // }
+    while (1)
+    {
+        // digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
+        println("Stuck in RC Check");
+        delay(100);
+    }
 }
 
 // #define RCCHECK(fn)                  \
@@ -82,16 +82,18 @@ void error_loop()
 //     }
 
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){println("Stuck in RCCHECK");error_loop();}}
-#define RCSOFTCHECK(fn) {rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){println("Stuck in RCSOFTHECK");}}
+#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
 
-IPAddress agent_ip(192, 168, 1, 3);
+IPAddress agent_ip(192, 168, 1, 146);
 size_t agent_port = 8888;
 extern char ssid[];
 extern char psk[];
 
 void payload_subscription_callback(const void *msgin)
 {
+  Serial.println("Got a payload subscribtion callback");
 	const std_msgs__msg__Bool *payload_in_msg = (const std_msgs__msg__Bool *)msgin;
+
 }
 
 void counter_subscription_callback(const void *msgin)
@@ -125,7 +127,7 @@ void setupROS()
     println("Created ROS node");
 
     // create executor
-    RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
+    RCCHECK(rclc_executor_init(&executor, &support.context, 3, &allocator));
     println("Created ROS executor");
 
     // create subscriber
@@ -135,6 +137,7 @@ void setupROS()
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
         "payload_drop"));
     RCCHECK(rclc_executor_add_subscription(&executor, &payload_subscriber, &payload_in_msg, &payload_subscription_callback, ON_NEW_DATA));
+    println("Init ROS Payload subscribtion");
 
     RCCHECK(rclc_subscription_init_default(
         &counter_subscriber,
@@ -142,6 +145,7 @@ void setupROS()
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
         "counter_drop"));
     RCCHECK(rclc_executor_add_subscription(&executor, &counter_subscriber, &counter_in_msg, &counter_subscription_callback, ON_NEW_DATA));
+    println("Init ROS counter subscribtion");
 
     RCCHECK(rclc_subscription_init_default(
         &thrust_subscriber,
@@ -149,11 +153,14 @@ void setupROS()
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "thruster_speed"));
     RCCHECK(rclc_executor_add_subscription(&executor, &thrust_subscriber, &thrust_in_msg, &thrust_subscription_callback, ON_NEW_DATA));
+    println("Init ROS thrust subscriber");
+
+
     // RCCHECK(rclc_publisher_init_default(
     //   &thrust_publisher,
     //   &node,
     //   ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-    //   "micro_ros_control_node"));
+    //   "thrust_value_publisher"));
 
     // There are 2 main sources of blocking code, the reading of PWM and the release of servo, which are both time dependant
     // If using a dual core S3, seperate these 2 tasks to run on a thread so that the other 2 tasks are responsive
@@ -304,12 +311,11 @@ void setup() {
     setupROS();
 
     // Wire.begin(8,9);
-
     // sensor.setTimeout(500);
     // if (!sensor.init())
     // {
     // println("Failed to detect and initialize sensor!");
-    // while (1) {}
+    // )while (1) {}
     // }
 
     // #if defined LONG_RANGE
@@ -372,7 +378,7 @@ void caseloop(){
     delay(15); // waits for the servo to get there
   }
   
-  if (payload_in_msg.data == 1) payload.store_state = 1; println("HAHA");
+  if (payload_in_msg.data == 1) payload.store_state = 1;
   if (payload_in_msg.data == 0) payload.store_state = 0;  
   if (counter_in_msg.data == 1) counter.store_state = 1;
   if (counter_in_msg.data == 0) counter.store_state = 0;
@@ -385,7 +391,9 @@ void doTask0(void *parameters)
 	while (1)
 	{
     caseloop();
-		RCCHECK(rclc_executor_spin(&executor));
+    RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
+
+		// RCCHECK(rclc_executor_spin(&executor));
 	}
 }
 
@@ -408,7 +416,7 @@ void loop(){
   caseloop();
   payload.UpdateState();
   counter.UpdateState();
-  RCCHECK(rclc_executor_spin(&executor));
+	RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
 #endif
 //     // Drop counterweight first
 //     if (dropbool==1){
