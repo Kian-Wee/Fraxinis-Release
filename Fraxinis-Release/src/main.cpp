@@ -98,6 +98,7 @@ class servo_class {
     int8_t led_pin = led_pin; //TEST THIS
     int store_state; //Used to store a new state temporarily, updated when UpdateState is called
     void UpdateState();
+    int switch_state;
 };
 
 servo_class::servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE = 1900,int PWM_CLOSED_OVERWRITE = 1100, int8_t led_pin=2){
@@ -109,17 +110,28 @@ servo_class::servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE = 1900,int PWM_
 
 void servo_class::WriteState(int8_t new_state){
   if(new_state != state){
-    if(new_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH); println("SERVO OPEN");
+    if(new_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH);
     if(new_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW);
     state=new_state;
   }
 }
 
 void servo_class::UpdateState(){
+
   if(store_state != state){
-    if(store_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH);
-    if(store_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW);
+    if(store_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH); //println("OPEN");
+    if(store_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW); //println("CLOSE");
+    // print("Store state");
+    // print(String(store_state));
+    // print("Current State");
+    // println(String(state));
+    // println("");
     state=store_state;
+    // print("After Store state");
+    // print(String(store_state));
+    // print("After Current State");
+    // println(String(state));
+    // println("");
   }
 }
 
@@ -196,19 +208,26 @@ void caseloop(){
   if (digitalRead(COUNTER_SWITCH) == 1){
     println("Opening Counter Servo");
     counter.WriteState(1);
+    counter.switch_state=1;
     delay(15); // waits for the servo to get there
-  }else if (digitalRead(COUNTER_SWITCH) == 0 && counter.state == 1){
+  }else if (digitalRead(COUNTER_SWITCH) == 0 && counter.switch_state == 1){
     counter.WriteState(0);
+    counter.switch_state=0;
     delay(15); // waits for the servo to get there
   }
 
   if (digitalRead(PAYLOAD_SWITCH) == 1){
     println("Opening Payload Servo");
     payload.WriteState(1);
-  } else if (digitalRead(PAYLOAD_SWITCH) == 0 && payload.state == 1){
+    payload.switch_state=1;
+    delay(15); // waits for the servo to get there
+  } else if (digitalRead(PAYLOAD_SWITCH) == 0 && payload.switch_state == 1){
     payload.WriteState(0);
+    payload.switch_state=0;
     delay(15); // waits for the servo to get there
   }
+
+  Serial.println(digitalRead(COUNTER_SWITCH));
   
   if (payload_in_msg.data == 1) payload.store_state = 1;
   if (payload_in_msg.data == 0) payload.store_state = 0;  
@@ -243,9 +262,13 @@ void loop(){
 // Run single core loop only if ESP32C3 is defined
 #ifdef ESP32C3
   readRCAll();
+  // Serial.print("LOOP STATE: "); Serial.println(payload.store_state);
   caseloop();
   payload.UpdateState();
   counter.UpdateState();
+  Serial.print("outside state:"); Serial.println(counter.state);
+  // payload.WriteState(payload.store_state);
+  // counter.WriteState(counter.store_state);
 	RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
 #endif
 //     // Drop counterweight first
@@ -292,6 +315,5 @@ void loop(){
 //       delay(15); // waits for the servo to get there
 //       resettimer=0;
 //     }
-
 
 }

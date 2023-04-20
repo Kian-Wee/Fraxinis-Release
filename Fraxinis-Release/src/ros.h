@@ -1,4 +1,3 @@
-
 #include <micro_ros_platformio.h>
 #include <stdio.h>
 #include <rcl/rcl.h>
@@ -63,16 +62,15 @@ void error_loop()
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){println("Stuck in RCCHECK");error_loop();}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
 
-IPAddress agent_ip(192, 168, 1, 146);
+IPAddress agent_ip(192, 168, 1, 3);
 size_t agent_port = 8888;
 extern char ssid[];
 extern char psk[];
 
 void payload_subscription_callback(const void *msgin)
 {
-  Serial.println("Got a payload subscribtion callback");
+//   Serial.println("Got a payload subscribtion callback");
 	const std_msgs__msg__Bool *payload_in_msg = (const std_msgs__msg__Bool *)msgin;
-
 }
 
 void counter_subscription_callback(const void *msgin)
