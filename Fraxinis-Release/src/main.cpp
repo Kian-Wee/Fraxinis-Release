@@ -9,7 +9,7 @@
 #include <Arduino.h>
 // #include "Wire.h"
 // #include <VL53L0X.h>
-#include <ESP32Servo.h>
+// #include <ESP32Servo.h>
 
 #include <pins.h>
 #include <misc_fn.h>
@@ -23,7 +23,7 @@ extern std_msgs__msg__Int32 thrust_in_msg;
 //-----------------------------------------------------------------------------
 
 // Core definitions for multithreading (assuming you have dual-core ESP32)
-static const BaseType_t pro_cpu = 0; // wifi_core
+static const BaseType_t pro_cpu = 0; // wifi_core, microros runs there
 static const BaseType_t app_cpu = 1;
 
 /**
@@ -89,20 +89,26 @@ void testdrop(int droptime=10){
 
 class servo_class {
   public:
-    servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE,int PWM_CLOSED_OVERWRITE, int8_t led_pin);
+    servo_class(int8_t servo_pin, int8_t PWM_Channel_Overwrite, int PWM_OPEN_OVERWRITE,int PWM_CLOSED_OVERWRITE, int8_t led_pin, int TIMER_WIDTH);
     int PWM_OPEN;
     int PWM_CLOSED;
-    Servo servo_obj;
+    // Servo servo_obj;
     int state; //Open = 1, Closed = 0
     void WriteState(int8_t new_state);
     int8_t led_pin = led_pin; //TEST THIS
     int store_state; //Used to store a new state temporarily, updated when UpdateState is called
     void UpdateState();
     int switch_state;
+    int8_t PWM_CHANNEL;
+
+    // ledcWrite(PWM_CHANNEL_STORE, map(Adh_val,0,180,409.6,2048)); 
 };
 
-servo_class::servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE = 1900,int PWM_CLOSED_OVERWRITE = 1100, int8_t led_pin=2){
-  servo_obj.attach(servo_pin);
+servo_class::servo_class(int8_t servo_pin, int8_t PWM_Channel_Overwrite, int PWM_OPEN_OVERWRITE = 1900,int PWM_CLOSED_OVERWRITE = 1100, int8_t led_pin=2,  int TIMER_WIDTH = 14){
+  // servo_obj.attach(servo_pin);
+  ledcSetup(PWM_Channel_Overwrite, 50, TIMER_WIDTH); 
+  ledcAttachPin(servo_pin, PWM_Channel_Overwrite);
+  int8_t PWM_CHANNEL_STORE = PWM_Channel_Overwrite;
   int PWM_OPEN = PWM_OPEN_OVERWRITE;
   int PWM_CLOSED = PWM_CLOSED_OVERWRITE;
   if (led_pin!=2) pinMode(led_pin,OUTPUT);
@@ -110,8 +116,8 @@ servo_class::servo_class(int8_t servo_pin,int PWM_OPEN_OVERWRITE = 1900,int PWM_
 
 void servo_class::WriteState(int8_t new_state){
   if(new_state != state){
-    if(new_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH);
-    if(new_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW);
+    if(new_state == 1) ledcWrite(PWM_CHANNEL, PWM_OPEN); digitalWrite(led_pin,HIGH);
+    if(new_state == 0) ledcWrite(PWM_CHANNEL, PWM_CLOSED);; digitalWrite(led_pin,LOW);
     state=new_state;
   }
 }
@@ -119,8 +125,8 @@ void servo_class::WriteState(int8_t new_state){
 void servo_class::UpdateState(){
 
   if(store_state != state){
-    if(store_state == 1) servo_obj.write(PWM_OPEN); digitalWrite(led_pin,HIGH); //println("OPEN");
-    if(store_state == 0) servo_obj.write(PWM_CLOSED); digitalWrite(led_pin,LOW); //println("CLOSE");
+    if(store_state == 1) ledcWrite(PWM_CHANNEL, PWM_OPEN); digitalWrite(led_pin,HIGH);
+    if(store_state == 0) ledcWrite(PWM_CHANNEL, PWM_CLOSED);; digitalWrite(led_pin,LOW);
     // print("Store state");
     // print(String(store_state));
     // print("Current State");
@@ -135,8 +141,8 @@ void servo_class::UpdateState(){
   }
 }
 
-servo_class payload(Payload_pin, 1940,1400, PAYLOAD_LED);
-servo_class counter(Thruster_pin, 1940,1400, COUNTER_LED);
+servo_class payload(Payload_pin, 0, 1940,1400, PAYLOAD_LED);
+servo_class counter(Thruster_pin, 1, 1940,1400, COUNTER_LED);
 
 void setup() {
 
