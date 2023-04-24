@@ -2,7 +2,8 @@
  * This class reads the various PWM RC inputs and stores it
  * 
  */
-#include <ESP32PWM.h>
+#include <Arduino.h>
+// #include <ESP32PWM.h>
 #include <pins.h>
 
 void setupRC(const int8_t RC_pin){
