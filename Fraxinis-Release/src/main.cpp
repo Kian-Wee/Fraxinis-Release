@@ -14,11 +14,31 @@
 #include <pins.h>
 #include <misc_fn.h>
 #include <rc.h>
-#include <ros.h>
 
-extern std_msgs__msg__Bool payload_in_msg;
-extern std_msgs__msg__Bool counter_in_msg;
-extern std_msgs__msg__Int32 thrust_in_msg;
+#include <micro_ros_platformio.h>
+#include <stdio.h>
+#include <rcl/rcl.h>
+#include <rcl/error_handling.h>
+#include <rclc/rclc.h>
+#include <rclc/executor.h>
+#include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/bool.h>
+#include "secrets.h"
+#include "misc_fn.h"
+#include "esp32-hal-ledc.h"
+
+rcl_subscription_t payload_subscriber;
+std_msgs__msg__Bool payload_in_msg;
+rcl_subscription_t counter_subscriber;
+std_msgs__msg__Bool counter_in_msg;
+rcl_subscription_t thrust_subscriber;
+std_msgs__msg__Int32 thrust_in_msg;
+
+rclc_executor_t executor;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_node_t node;
+rcl_timer_t timer;
 
 //-----------------------------------------------------------------------------
 
@@ -89,13 +109,12 @@ void testdrop(int droptime=10){
 
 class servo_class {
   public:
-    servo_class(int8_t servo_pin, int8_t PWM_Channel_Overwrite, int PWM_OPEN_OVERWRITE,int PWM_CLOSED_OVERWRITE, int8_t led_pin, int TIMER_WIDTH);
+    servo_class(int8_t servo_pin, int8_t PWM_Channel_Overwrite, int PWM_OPEN_OVERWRITE,int PWM_CLOSED_OVERWRITE, int8_t led_pin_overwrite, int TIMER_WIDTH);
     int PWM_OPEN;
     int PWM_CLOSED;
-    // Servo servo_obj;
-    int state; //Open = 1, Closed = 0
-    void WriteState(int8_t new_state);
-    int8_t led_pin = led_pin; //TEST THIS
+    bool state; //Open = 1, Closed = 0
+    void WriteState(bool new_state);
+    int8_t led_pin; //TEST THIS
     int store_state; //Used to store a new state temporarily, updated when UpdateState is called
     void UpdateState();
     int switch_state;
@@ -104,20 +123,29 @@ class servo_class {
     // ledcWrite(PWM_CHANNEL_STORE, map(Adh_val,0,180,409.6,2048)); 
 };
 
-servo_class::servo_class(int8_t servo_pin, int8_t PWM_Channel_Overwrite, int PWM_OPEN_OVERWRITE = 1900,int PWM_CLOSED_OVERWRITE = 1100, int8_t led_pin=2,  int TIMER_WIDTH = 14){
+servo_class::servo_class(int8_t servo_pin, int8_t PWM_Channel_Overwrite, int PWM_OPEN_OVERWRITE = 1900,int PWM_CLOSED_OVERWRITE = 1100, int8_t led_pin_overwrite=2,  int TIMER_WIDTH = 14){
   // servo_obj.attach(servo_pin);
+  print("Initalising "); print(String(servo_pin)); print(" on:"); println(String(PWM_Channel_Overwrite));
   ledcSetup(PWM_Channel_Overwrite, 50, TIMER_WIDTH); 
   ledcAttachPin(servo_pin, PWM_Channel_Overwrite);
-  int8_t PWM_CHANNEL_STORE = PWM_Channel_Overwrite;
-  int PWM_OPEN = PWM_OPEN_OVERWRITE;
-  int PWM_CLOSED = PWM_CLOSED_OVERWRITE;
-  if (led_pin!=2) pinMode(led_pin,OUTPUT);
+  PWM_CHANNEL = PWM_Channel_Overwrite;
+  PWM_OPEN = PWM_OPEN_OVERWRITE;
+  PWM_CLOSED = PWM_CLOSED_OVERWRITE;
+  led_pin=led_pin_overwrite;
+  pinMode(led_pin,OUTPUT);
 }
 
-void servo_class::WriteState(int8_t new_state){
+void servo_class::WriteState(bool new_state){
+
+  print("Current state is: "); print(String(state)); print("| Attempted overwrite state: "); println(String(new_state));
+
   if(new_state != state){
-    if(new_state == 1) ledcWrite(PWM_CHANNEL, PWM_OPEN); digitalWrite(led_pin,HIGH);
-    if(new_state == 0) ledcWrite(PWM_CHANNEL, PWM_CLOSED);; digitalWrite(led_pin,LOW);
+    if(new_state == true){
+      ledcWrite(PWM_CHANNEL, PWM_OPEN);
+      digitalWrite(led_pin,HIGH);  }
+    if(new_state == false){
+      ledcWrite(PWM_CHANNEL, PWM_CLOSED);
+      digitalWrite(led_pin,LOW);   }
     state=new_state;
   }
 }
@@ -125,24 +153,128 @@ void servo_class::WriteState(int8_t new_state){
 void servo_class::UpdateState(){
 
   if(store_state != state){
-    if(store_state == 1) ledcWrite(PWM_CHANNEL, PWM_OPEN); digitalWrite(led_pin,HIGH);
-    if(store_state == 0) ledcWrite(PWM_CHANNEL, PWM_CLOSED);; digitalWrite(led_pin,LOW);
-    // print("Store state");
-    // print(String(store_state));
-    // print("Current State");
-    // println(String(state));
-    // println("");
+    if(store_state == true){
+      ledcWrite(PWM_CHANNEL, PWM_OPEN);
+      digitalWrite(led_pin,HIGH); }
+    if(store_state == false){
+      ledcWrite(PWM_CHANNEL, PWM_CLOSED);
+      digitalWrite(led_pin,LOW);
+    } 
     state=store_state;
-    // print("After Store state");
-    // print(String(store_state));
-    // print("After Current State");
-    // println(String(state));
-    // println("");
   }
 }
 
 servo_class payload(Payload_pin, 0, 1940,1400, PAYLOAD_LED);
 servo_class counter(Thruster_pin, 1, 1940,1400, COUNTER_LED);
+
+void error_loop()
+{
+    while (1)
+    {
+        // digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
+        println("Stuck in RC Check");
+        delay(100);
+    }
+}
+
+#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){println("Stuck in RCCHECK");error_loop();}}
+#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
+
+IPAddress agent_ip(192, 168, 1, 3);
+size_t agent_port = 8888;
+extern char ssid[];
+extern char psk[];
+
+void payload_subscription_callback(const void * msgin)
+{
+	const std_msgs__msg__Bool * payload_in_msg = (const std_msgs__msg__Bool *)msgin;
+  payload.WriteState(payload_in_msg->data);
+}
+
+void counter_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Bool *counter_in_msg = (const std_msgs__msg__Bool *)msgin;
+  counter.WriteState(counter_in_msg->data);
+}
+
+void thrust_subscription_callback(const void *msgin)
+{
+	const std_msgs__msg__Int32 *counter_in_msg = (const std_msgs__msg__Int32 *)msgin;
+}
+
+
+void setupROS()
+{
+
+    println("Setting up ROS");
+    
+    print("Wifi Credentials: "); print(ssid); print("|"); println(psk);
+
+    set_microros_wifi_transports(ssid, psk, agent_ip, agent_port);
+    println("Added wifi transport");
+    allocator = rcl_get_default_allocator();
+    println("Added allocator");
+
+    // create init_options
+    RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
+    println("Init options");
+
+    // create node
+    RCCHECK(rclc_node_init_default(&node, "micro_ros_arduino_node", "", &support));
+    println("Created ROS node");
+
+    // create executor
+    RCCHECK(rclc_executor_init(&executor, &support.context, 3, &allocator));
+    println("Created ROS executor");
+
+    // create subscriber
+    RCCHECK(rclc_subscription_init_default(
+        &payload_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
+        "payload_drop"));
+    RCCHECK(rclc_executor_add_subscription(&executor, &payload_subscriber, &payload_in_msg, &payload_subscription_callback, ON_NEW_DATA));
+    println("Init ROS Payload subscribtion");
+
+    RCCHECK(rclc_subscription_init_default(
+        &counter_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
+        "counter_drop"));
+    RCCHECK(rclc_executor_add_subscription(&executor, &counter_subscriber, &counter_in_msg, &counter_subscription_callback, ON_NEW_DATA));
+    println("Init ROS counter subscribtion");
+
+    RCCHECK(rclc_subscription_init_default(
+        &thrust_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+        "thruster_speed"));
+    RCCHECK(rclc_executor_add_subscription(&executor, &thrust_subscriber, &thrust_in_msg, &thrust_subscription_callback, ON_NEW_DATA));
+    println("Init ROS thrust subscriber");
+
+    // There are 2 main sources of blocking code, the reading of PWM and the release of servo, which are both time dependant
+    // If using a dual core S3, seperate these 2 tasks to run on a thread so that the other 2 tasks are responsive
+    #ifdef ESP32S3
+        xTaskCreatePinnedToCore(doTask0,
+                                "Task 0",
+                                237680,
+                                NULL,
+                                1,
+                                NULL,
+                                pro_cpu);
+
+        // Start Task 1 (in Core 1)
+        xTaskCreatePinnedToCore(doTask1,
+                                "Task 1",
+                                6000,
+                                NULL,
+                                1,
+                                NULL,
+                                app_cpu);
+    #endif
+
+    println("Finish ROS setup");
+}
 
 void setup() {
 
@@ -232,8 +364,6 @@ void caseloop(){
     payload.switch_state=0;
     delay(15); // waits for the servo to get there
   }
-
-  Serial.println(digitalRead(COUNTER_SWITCH));
   
   if (payload_in_msg.data == 1) payload.store_state = 1;
   if (payload_in_msg.data == 0) payload.store_state = 0;  
@@ -258,8 +388,6 @@ void doTask1(void *parameters)
 	while (1)
 	{
     readRCAll();
-    payload.UpdateState();
-    counter.UpdateState();
 	}
 }
 
@@ -268,13 +396,7 @@ void loop(){
 // Run single core loop only if ESP32C3 is defined
 #ifdef ESP32C3
   readRCAll();
-  // Serial.print("LOOP STATE: "); Serial.println(payload.store_state);
   caseloop();
-  payload.UpdateState();
-  counter.UpdateState();
-  Serial.print("outside state:"); Serial.println(counter.state);
-  // payload.WriteState(payload.store_state);
-  // counter.WriteState(counter.store_state);
 	RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
 #endif
 //     // Drop counterweight first
