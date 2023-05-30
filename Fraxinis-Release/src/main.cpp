@@ -77,6 +77,10 @@ Uncomment ONE of these two lines to get
 #define PAYLOAD_SWITCH 8
 #define COUNTER_SWITCH 10
 
+#define STATUS_LED 11
+#define STATUS_BUTTON 12
+bool MICROROS_EN = 0
+
 #define WAIT_FOR_DROP 0 //(m)waits until the height is below a certain threshold to prevent misfires, set to 0 to disable
 
 const bool DEBUGPRINT =1; //prints debug statement
@@ -280,7 +284,7 @@ void setup() {
 
     Serial.begin(115200);
     println("Microcontroller booting up");
-    delay(2000);
+    delay(500);
 
     pinMode(PAYLOAD_SWITCH,INPUT_PULLDOWN);
     pinMode(COUNTER_SWITCH,INPUT_PULLDOWN);
@@ -290,7 +294,14 @@ void setup() {
     setupRC(RCin_TM); // Thruster Modifier Pin(20%-80%), necessary to ramp up throttle and prevent jerks
     setupRC(RCin_AP); // Adhesive Pin(Off, Inject Adhesive, Turn on UV Light)
 
-    setupROS();
+    // Turn on MicroROS Node only if button is held down
+    if (digitalRead(STATUS_BUTTON)==1){
+      setupROS();
+      digitalWrite(STATUS_LED,1);
+      MICROROS_EN = 1;
+    }else{
+      digitalWrite(STATUS_LED,0);
+    }
 
     // Wire.begin(8,9);
     // sensor.setTimeout(500);
@@ -378,7 +389,7 @@ void doTask0(void *parameters)
 	while (1)
 	{
     caseloop();
-    RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
+    if (MICROROS_EN == true) : ifRCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
 	}
 }
 
@@ -397,7 +408,7 @@ void loop(){
 #ifdef ESP32C3
   readRCAll();
   caseloop();
-	RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
+	if (MICROROS_EN == true) : RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
 #endif
 //     // Drop counterweight first
 //     if (dropbool==1){
